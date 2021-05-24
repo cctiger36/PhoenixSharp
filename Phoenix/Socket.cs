@@ -6,6 +6,8 @@ namespace Phoenix
 {
     public sealed class Socket
     {
+        public const ushort WS_CLOSE_NORMAL = 1000;
+
         #region nested types
 
         public enum State
@@ -56,8 +58,15 @@ namespace Phoenix
         private readonly IWebsocketFactory websocketFactory;
         internal readonly Options opts;
 
+        private string url;
+        private Dictionary<string, string> parameters = null;
+        private uint @ref;
+        private uint? reconnectTimer = null;
         private uint? heartbeatTimer = null;
+        private string pendingHeartbeatRef = null;
+        private bool closeWasClean = false;
         private Dictionary<string, Channel> channels = new Dictionary<string, Channel>();
+        private uint reconnectRetries = 0;
 
         public State state { get; private set; }
 
@@ -91,13 +100,37 @@ namespace Phoenix
 
         private void SendHeartbeat()
         {
-            if (state != State.Open || opts.heartbeatInterval == null)
-            {
-                return;
-            }
+            if (pendingHeartbeatRef != null && !IsConnected()) { return; }
+            pendingHeartbeatRef = MakeRef();
+            Push(new Message("phoenix", "heartbeat", pendingHeartbeatRef, null));
+            heartbeatTimer = opts.delayedExecutor.Execute(HeartbeatTimeout, opts.heartbeatInterval.Value);
+        }
 
-            Push(new Message("phoenix", "heartbeat", null, null));
-            heartbeatTimer = opts.delayedExecutor.Execute(SendHeartbeat, opts.heartbeatInterval.Value);
+        private void HeartbeatTimeout()
+        {
+            if (pendingHeartbeatRef != null)
+            {
+                pendingHeartbeatRef = null;
+                Log(LogLevel.Debug, "socket", "heartbeat timeout. Attempting to re-establish connection");
+                AbnormalClose("heartbeat timeout");
+            }
+        }
+
+        private void ResetHeartbeat()
+        {
+            // if (websocket != null && websocket.skipHeartbeat) { return; }
+            pendingHeartbeatRef = null;
+            CancelHeartbeat();
+            opts.delayedExecutor.Execute(SendHeartbeat, opts.heartbeatInterval.Value);
+        }
+
+        private void AbnormalClose(string reason)
+        {
+            closeWasClean = false;
+            if (IsConnected())
+            {
+                websocket.Close(WS_CLOSE_NORMAL, reason);
+            }
         }
 
         private void RejoinChannels()
@@ -124,6 +157,16 @@ namespace Phoenix
             }
         }
 
+        private void CancelReconnect()
+        {
+            if (reconnectTimer.HasValue)
+            {
+                opts.delayedExecutor.Cancel(reconnectTimer.Value);
+                reconnectTimer = null;
+            }
+            reconnectRetries = 0;
+        }
+
         internal void Remove(Channel channel)
         {
             if (channels.ContainsKey(channel.topic) && channels[channel.topic] == channel)
@@ -138,7 +181,7 @@ namespace Phoenix
             var json = msg.Serialize();
             Log(LogLevel.Trace, "push", json);
 
-            if (state == State.Open)
+            if (IsConnected())
             {
                 websocket.Send(json);
                 return true;
@@ -161,33 +204,48 @@ namespace Phoenix
 
         #region public methods
 
+        public string MakeRef()
+        {
+            var newRef = @ref + 1;
+            if (newRef == @ref) { @ref = 0; } else { @ref = newRef; }
+            return @ref.ToString();
+        }
+
+        public bool IsConnected()
+        {
+            return state == State.Open;
+        }
+
         public void Disconnect(ushort? code = null, string reason = null)
         {
+            if (websocket == null) { return; }
 
-            if (websocket == null)
-            {
-                return;
-            }
-
+            closeWasClean = true;
             CancelHeartbeat();
+            CancelReconnect();
             TriggerChannelError("socket disconnect");
-
             websocket.Close(code, reason);
 
             // disables callbacks
             state = State.Closed;
-
             websocket = null;
+        }
+
+        // For test
+        public void UnexpectedDisconnect()
+        {
+            if (websocket == null) { return; }
+            websocket.Close(null, null);
         }
 
         // params - The params to send when connecting, for example `{user_id: userToken}`
         public void Connect(string url, Dictionary<string, string> parameters = null)
         {
+            if (websocket != null) { Disconnect(); }
 
-            if (websocket != null)
-            {
-                Disconnect();
-            }
+            this.url = url;
+            this.parameters = parameters;
+            closeWasClean = false;
 
             var config = new WebsocketConfiguration()
             {
@@ -199,9 +257,24 @@ namespace Phoenix
             };
 
             websocket = websocketFactory.Build(config);
-
             state = State.Connecting;
             websocket.Connect();
+        }
+
+        private void Reconnect()
+        {
+            reconnectRetries++;
+            reconnectTimer = opts.delayedExecutor.Execute(() =>
+            {
+                try
+                {
+                    Connect(url, parameters);
+                }
+                catch (Exception)
+                {
+                    Reconnect();
+                }
+            }, reconnectRetries);
         }
 
         public Channel MakeChannel(string topic)
@@ -227,88 +300,66 @@ namespace Phoenix
 
         private void WebsocketOnOpen(IWebsocket ws)
         {
-
-            if (ws != websocket)
-            {
-                return;
-            }
-
+            if (ws != websocket) { return; }
             Log(LogLevel.Debug, "socket", "on open");
 
+            closeWasClean = false;
             state = State.Open;
             RejoinChannels();
-            SendHeartbeat();
+            CancelReconnect();
+            ResetHeartbeat();
 
-            if (OnOpen != null)
-            {
-                OnOpen();
-            }
+            OnOpen?.Invoke();
         }
 
         private void WebsocketOnClose(IWebsocket ws, ushort code, string message)
         {
-
-            if (ws != websocket || state == State.Closed)
-            {
-                return;
-            }
-
+            if (ws != websocket || state == State.Closed) { return; }
             Log(LogLevel.Debug, "socket", string.Format("on close: ({0}) - {1}", code, message ?? "NONE"));
 
             state = State.Closed;
             TriggerChannelError("socket close");
             CancelHeartbeat();
-
-            if (OnClose != null)
-            {
-                OnClose(code, message);
-            }
-
+            OnClose?.Invoke(code, message);
             websocket = null;
+
+            if (!closeWasClean)
+            {
+                CancelReconnect();
+                Reconnect();
+            }
         }
 
         private void WebsocketOnError(IWebsocket ws, string message)
         {
-
-            if (ws != websocket || state == State.Closed)
-            {
-                return;
-            }
-
+            if (ws != websocket || state == State.Closed) { return; }
             Log(LogLevel.Info, "socket", message ?? "unknown");
 
             state = State.Closed;
             TriggerChannelError("socket error");
             CancelHeartbeat();
 
-            if (OnError != null)
-            {
-                OnError(message);
-            }
-
+            OnError?.Invoke(message);
             websocket = null;
         }
 
         private void WebsocketOnMessage(IWebsocket ws, string data)
         {
-
-            if (ws != websocket)
-            {
-                return;
-            }
-
+            if (ws != websocket) { return; }
             var msg = MessageSerialization.Deserialize(data);
             Log(LogLevel.Trace, "socket", string.Format("received: {0}", msg.ToString()));
+
+            if (msg.@ref != null && msg.@ref == pendingHeartbeatRef)
+            {
+                ResetHeartbeat();
+            }
 
             if (channels.ContainsKey(msg.topic))
             {
                 channels[msg.topic].Trigger(msg);
             }
 
-            if (OnMessage != null)
-            {
-                OnMessage(data);
-            }
+            OnMessage?.Invoke(data);
         }
 
         #endregion

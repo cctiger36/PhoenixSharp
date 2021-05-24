@@ -1,45 +1,161 @@
-namespace Phoenix {
-	// ## Presence
-	//
-	// The `Presence` object provides features for syncing presence information
-	// from the server with the client and handling presences joining and leaving.
-	//
-	// ### Syncing initial state from the server
-	//
-	// `Presence.syncState` is used to sync the list of presences on the server
-	// with the client's state. An optional `onJoin` and `onLeave` callback can
-	// be provided to react to changes in the client's local presences across
-	// disconnects and reconnects with the server.
-	//
-	// `Presence.syncDiff` is used to sync a diff of presence join and leave
-	// events from the server, as they happen. Like `syncState`, `syncDiff`
-	// accepts optional `onJoin` and `onLeave` callbacks to react to a user
-	// joining or leaving from a device.
-	//
-	// ### Listing Presences
-	//
-	// `Presence.list` is used to return a list of presence information
-	// based on the local state of metadata. By default, all presence
-	// metadata is returned, but a `listBy` function can be supplied to
-	// allow the client to select which metadata to use for a given presence.
-	// For example, you may have a user online from different devices with a
-	// a metadata status of "online", but they have set themselves to "away"
-	// on another device. In this case, they app may choose to use the "away"
-	// status for what appears on the UI. The example below defines a `listBy`
-	// function which prioritizes the first metadata which was registered for
-	// each user. This could be the first tab they opened, or the first device
-	// they came online from:
-	//
-	//     let state = {}
-	//     state = Presence.syncState(state, stateFromServer)
-	//     let listBy = (id, {metas: [first, ...rest]}) => {
-	//       first.count = rest.length + 1 // count of this user's presences
-	//       first.id = id
-	//       return first
-	//     }
-	//     let onlineUsers = Presence.list(state, listBy)
-	//
-	public class Presence {
-		// TODO
-	}
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using Newtonsoft.Json.Linq;
+
+namespace Phoenix
+{
+    public class Presence
+    {
+        public class Item : Dictionary<string, List<Dictionary<string, string>>> { };
+        public class State : Dictionary<string, Item> { };
+        public class Diff : Dictionary<string, State> { };
+
+        private static readonly Dictionary<string, string> events = new Dictionary<string, string>()
+        {
+            {"state", "presence_state"},
+            {"diff", "presence_diff"}
+        };
+
+        public Channel channel;
+        private string joinRef;
+        private State state = new State();
+        private List<Diff> pendingDiffs = new List<Diff>();
+
+        public delegate void OnJoinDelegate(string id, Item currentItem, Item newItem);
+        public OnJoinDelegate onJoin;
+        public delegate void OnLeaveDelegate(string id, Item currentItem, Item newItem);
+        public OnLeaveDelegate onLeave;
+        public delegate void OnSyncDelegate();
+        public OnSyncDelegate onSync;
+
+        public Presence(Channel channel)
+        {
+            this.channel = channel;
+            this.channel.On(events["state"], msg =>
+            {
+                joinRef = channel.joinRef;
+                var newState = msg.payload.ToObject<State>();
+                state = SyncState(state, newState, onJoin, onLeave);
+                pendingDiffs.ForEach(diff =>
+                {
+                    state = SyncDiff(state, diff, onJoin, onLeave);
+                });
+                pendingDiffs = new List<Diff>();
+                onSync?.Invoke();
+            });
+            this.channel.On(events["diff"], msg =>
+            {
+                var diff = msg.payload.ToObject<Diff>();
+                if (InPendingSyncState())
+                {
+                    pendingDiffs.Add(diff);
+                }
+                else
+                {
+                    state = SyncDiff(state, diff, onJoin, onLeave);
+                    onSync?.Invoke();
+                }
+            });
+        }
+
+        private bool InPendingSyncState()
+        {
+            return joinRef == null || (joinRef != channel.joinRef);
+        }
+
+        public List<Item> list(Action<string, Item> by)
+        {
+            return list(state, by);
+        }
+
+        public static State SyncState(State currentState, State newState, OnJoinDelegate onJoin, OnLeaveDelegate onLeave)
+        {
+            var state = Clone(currentState);
+            var joins = new State();
+            var leaves = new State();
+            foreach (var entry in state)
+            {
+                if (!newState.ContainsKey(entry.Key))
+                {
+                    leaves[entry.Key] = entry.Value;
+                }
+            }
+            foreach (var entry in newState)
+            {
+                if (state.ContainsKey(entry.Key))
+                {
+                    var currentItem = state[entry.Key];
+                    var newRefs = entry.Value["metas"].Select(m => m["phx_ref"]).ToList();
+                    var curRefs = currentItem["metas"].Select(m => m["phx_ref"]).ToList();
+                    var joinedMetas = entry.Value["metas"].Where(m => !curRefs.Contains(m["phx_ref"])).ToList();
+                    var leftMetas = currentItem["metas"].Where(m => !newRefs.Contains(m["phx_ref"])).ToList();
+                    if (joinedMetas.Count() > 0)
+                    {
+                        joins[entry.Key] = entry.Value;
+                        joins[entry.Key]["metas"] = joinedMetas;
+                    }
+                    if (leftMetas.Count() > 0)
+                    {
+                        leaves[entry.Key] = Clone(currentItem);
+                        leaves[entry.Key]["metas"] = leftMetas;
+                    }
+                }
+                else
+                {
+                    joins[entry.Key] = entry.Value;
+                }
+            }
+            var diff = new Diff();
+            diff["joins"] = joins;
+            diff["leaves"] = leaves;
+            return SyncDiff(state, diff, onJoin, onLeave);
+        }
+
+        public static State SyncDiff(State currentState, Diff diff, OnJoinDelegate onJoin, OnLeaveDelegate onLeave)
+        {
+            var state = Clone(currentState);
+            foreach (var entry in diff["joins"])
+            {
+                Item currentItem = null;
+                if (state.ContainsKey(entry.Key)) currentItem = state[entry.Key];
+                state[entry.Key] = entry.Value;
+                if (currentItem != null)
+                {
+                    var joinedRefs = state[entry.Key]["metas"].Select(m => m["phx_ref"]).ToList();
+                    var curMetas = currentItem["metas"].Where(m => !joinedRefs.Contains(m["phx_ref"])).ToList();
+                    state[entry.Key]["metas"] = curMetas.Concat(state[entry.Key]["metas"]).ToList();
+                }
+                onJoin?.Invoke(entry.Key, currentItem, entry.Value);
+            }
+            foreach (var entry in diff["leaves"])
+            {
+                if (!state.ContainsKey(entry.Key)) { continue; }
+                var currentItem = state[entry.Key];
+                var refsToRemove = entry.Value["metas"].Select(m => m["phx_ref"]).ToList();
+                currentItem["metas"] = currentItem["metas"].Where(m => !refsToRemove.Contains(m["phx_ref"])).ToList();
+                onLeave?.Invoke(entry.Key, currentItem, entry.Value);
+                if (currentItem["metas"].Count() == 0)
+                {
+                    state.Remove(entry.Key);
+                }
+            }
+            return state;
+        }
+
+        public static List<Item> list(State presenses, Action<string, Item> chooser)
+        {
+            if (chooser == null) return presenses.Values.ToList();
+            return presenses.Select(entry =>
+            {
+                chooser(entry.Key, entry.Value);
+                return entry.Value;
+            }).ToList();
+        }
+
+        private static T Clone<T>(T original)
+        {
+            return JObject.FromObject(original).ToObject<T>();
+        }
+    }
 }

@@ -23,25 +23,23 @@ namespace Phoenix
 
         #region properties
 
-        private static uint refCount = 0;
-
         public Socket socket;
         public State state = State.Closed;
         public readonly string topic;
+        public string joinRef;
 
         private Dictionary<string, Action<Message>> bindings = new Dictionary<string, Action<Message>>();
+        private uint bindingRef = 0;
         private Dictionary<string, Push> activePushes = new Dictionary<string, Push>();
-        private List<Message> sendBuffer = new List<Message>();
-
-        private string joinRef;
+        private List<Message> pushBuffer = new List<Message>();
         private uint? reconnectTimer;
 
-        public bool canPush
+        public bool CanPush
         {
-            get { return socket.state == Socket.State.Open && state == State.Joined; }
+            get { return socket.IsConnected() && state == State.Joined; }
         }
 
-        private Push joinPush
+        private Push JoinPush
         {
             get { return activePushes[joinRef]; }
         }
@@ -99,10 +97,9 @@ namespace Phoenix
 
             state = State.Joining;
 
-            joinPush.reply = null;
-            Push(joinPush, null);
+            JoinPush.reply = null;
+            Push(JoinPush, null);
         }
-
 
         public void On(Message.InBoundEvent @event, Action<Message> callback)
         {
@@ -158,7 +155,7 @@ namespace Phoenix
 
             if (!socket.Push(push.message))
             {
-                sendBuffer.Add(push.message);
+                pushBuffer.Add(push.message);
             }
 
             return push;
@@ -195,7 +192,7 @@ namespace Phoenix
         // Return the next message ref, accounting for overflows
         private string MakeRef()
         {
-            return (++refCount).ToString();
+            return (++bindingRef).ToString();
         }
 
         private Message MakeMessage(Enum @event, string @ref = null, JObject payload = null)
@@ -210,7 +207,7 @@ namespace Phoenix
 
         private void FlushSendBuffer()
         {
-            sendBuffer = sendBuffer
+            pushBuffer = pushBuffer
                 .Where(m => !socket.Push(m))
                 .ToList();
         }
@@ -309,10 +306,7 @@ namespace Phoenix
                 && msg.@ref != joinRef
                 && inboundEvent != Message.InBoundEvent.phx_reply;
 
-            if (isOldJoinEvent)
-            {
-                return;
-            }
+            if (isOldJoinEvent) { return; }
 
             switch (inboundEvent)
             {
