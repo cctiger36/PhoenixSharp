@@ -115,8 +115,8 @@ namespace PhoenixTests
             Assert.That(() => afterJoinMessage != null, Is.True.After(networkDelay, 10));
             Assert.AreEqual("Welcome!", afterJoinMessage.payload["message"].Value<string>());
 
-            // 1. heartbeat, 2. error, 3. join, 4. after_join
-            Assert.AreEqual(4, onMessageData.Count, "Unexpected message count: " + string.Join("; ", onMessageData));
+            // 1. error, 2. join, 3. after_join
+            Assert.AreEqual(3, onMessageData.Count, "Unexpected message count: " + string.Join("; ", onMessageData));
 
             /// 
             /// test echo reply
@@ -174,7 +174,7 @@ namespace PhoenixTests
             Assert.That(() => roomChannel.CanPush, Is.True.After(networkDelay, 10));
 
             /// 
-            /// test channel replace
+            /// test duplicate channel join
             /// 
             joinOkReply = null;
             joinErrorReply = null;
@@ -193,21 +193,27 @@ namespace PhoenixTests
             Assert.IsNull(joinErrorReply);
             Assert.IsNotNull(errorMessage);
             Assert.IsNotNull(closeMessage);
+            Assert.That(() => newCloseMessage, Is.Not.Null.After(networkDelay, 50));
 
             /// 
             /// test channel leave
             /// also, it should discard any additional messages
             /// 
-            Assert.IsNull(newCloseMessage);
+            roomChannel = socket.MakeChannel("tester:phoenix-sharp");
+            roomChannel.Join(param)
+                .Receive(Reply.Status.Ok, r => joinOkReply = r)
+                .Receive(Reply.Status.Error, r => joinErrorReply = r);
+
+            Assert.That(() => joinOkReply.HasValue, Is.True.After(networkDelay, 10));
             Message pushMessage = null;
 
-            newRoomChannel.On("push_test", m => pushMessage = m);
-            newRoomChannel.Push("push_test", payload);
+            roomChannel.On("push_test", m => pushMessage = m);
+            roomChannel.Push("push_test", payload);
 
             Assert.IsNull(pushMessage);
-            newRoomChannel.Leave();
+            roomChannel.Leave();
 
-            Assert.That(() => newCloseMessage != null, Is.True.After(networkDelay, 10));
+            Assert.That(() => closeMessage != null, Is.True.After(networkDelay, 10));
             Assert.IsNull(pushMessage); // ignored
         }
 
@@ -358,7 +364,7 @@ namespace PhoenixTests
         private List<string> GetPresenceIds(Presence presence)
         {
             var listIds = new List<string>();
-            presence.list((id, item) => listIds.Add(id));
+            presence.List((id, item) => listIds.Add(id));
             return listIds;
         }
     }

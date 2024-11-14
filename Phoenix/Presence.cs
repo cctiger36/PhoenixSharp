@@ -64,9 +64,9 @@ namespace Phoenix
             return joinRef == null || (joinRef != channel.joinRef);
         }
 
-        public List<Item> list(Action<string, Item> by)
+        public List<Item> List(Action<string, Item> by)
         {
-            return list(state, by);
+            return List(state, by);
         }
 
         public static State SyncState(State currentState, State newState, OnJoinDelegate onJoin, OnLeaveDelegate onLeave)
@@ -143,7 +143,7 @@ namespace Phoenix
             return state;
         }
 
-        public static List<Item> list(State presenses, Action<string, Item> chooser)
+        public static List<Item> List(State presenses, Action<string, Item> chooser)
         {
             if (chooser == null) return presenses.Values.ToList();
             return presenses.Select(entry =>
