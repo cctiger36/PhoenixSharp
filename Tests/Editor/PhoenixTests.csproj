@@ -21,7 +21,7 @@
     <PackageReference Include="WebSocketSharp" Version="1.0.3-rc11" />
   </ItemGroup>
   <ItemGroup>
-    <ProjectReference Include="..\Phoenix\Phoenix.csproj">
+    <ProjectReference Include="..\..\Editor\Phoenix.csproj">
       <Project>{4F7CF33A-97AF-4618-8391-303091FAF3D7}</Project>
       <Name>Phoenix</Name>
     </ProjectReference>

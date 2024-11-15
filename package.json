@@ -1,0 +1,16 @@
+{
+    "name": "phoenix-sharp",
+    "displayName": "PhoenixSharp", 
+    "version": "1.0.0",               
+    "unity": "2022.3",
+    "description": "A C# Phoenix Channels client.",
+    "author": {
+        "name": "Mazyad Alabduljaleel",
+        "url": "https://github.com/cctiger36/PhoenixSharp"
+    },
+    "keywords": [
+    ],
+    "dependencies": {
+        "com.unity.nuget.newtonsoft-json": "3.2.1"
+    }
+}

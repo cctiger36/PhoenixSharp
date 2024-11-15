@@ -3,9 +3,9 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio 2012
 VisualStudioVersion = 12.0.0.0
 MinimumVisualStudioVersion = 10.0.0.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Phoenix", "Phoenix\Phoenix.csproj", "{4F7CF33A-97AF-4618-8391-303091FAF3D7}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Phoenix", "Editor\Phoenix.csproj", "{4F7CF33A-97AF-4618-8391-303091FAF3D7}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhoenixTests", "PhoenixTests\PhoenixTests.csproj", "{86EA9FEF-B8BC-4A3A-B64B-522B48438129}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "PhoenixTests", "Tests\Editor\PhoenixTests.csproj", "{86EA9FEF-B8BC-4A3A-B64B-522B48438129}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
