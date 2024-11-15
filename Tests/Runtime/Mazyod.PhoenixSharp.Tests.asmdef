@@ -1,0 +1,11 @@
+{
+    "name": "Mazyod.PhoenixSharp.Tests",
+    "references": [
+        "Mazyod.PhoenixSharp"
+    ],
+    "optionalUnityReferences": [
+        "TestAssemblies"
+    ],
+    "includePlatforms": [],
+    "excludePlatforms": []
+}
